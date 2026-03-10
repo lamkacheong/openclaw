@@ -17,6 +17,7 @@ import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
 import { GatewayLockError } from "../../infra/gateway-lock.js";
+import { resolveProxyFetchFromEnv } from "../../infra/net/proxy-fetch.js";
 import { formatPortDiagnostics, inspectPortUsage } from "../../infra/ports.js";
 import { cleanStaleGatewayProcessesSync } from "../../infra/restart-stale-pids.js";
 import { setConsoleSubsystemFilter, setConsoleTimestampPrefix } from "../../logging/console.js";
@@ -164,6 +165,22 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
     defaultRuntime.error("Use --reset with --dev.");
     defaultRuntime.exit(1);
     return;
+  }
+
+  // Node.js 22's native fetch (undici) does not automatically read http_proxy /
+  // https_proxy environment variables, and TUN-mode VPNs do not intercept
+  // Node.js connections on macOS. Third-party SDKs embedded in the gateway
+  // (e.g. the Pi coding-agent SDK) call bare fetch() and therefore bypass any
+  // configured proxy, causing LLM requests to time out in proxy-required
+  // environments. Patch globalThis.fetch early so every bare fetch() call in
+  // the process inherits the proxy settings — EnvHttpProxyAgent also honours
+  // NO_PROXY, so loopback / localhost exclusions are preserved.
+  const proxyFetch = resolveProxyFetchFromEnv();
+  if (proxyFetch) {
+    globalThis.fetch = proxyFetch;
+    gatewayLog.info(
+      "http_proxy env var detected — patched globalThis.fetch to route through proxy",
+    );
   }
 
   setConsoleTimestampPrefix(true);
